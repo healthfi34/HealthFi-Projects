@@ -1,3 +1,8 @@
 [build]
-  command = "npm run build"
-  publish = ".next"
+  command = "cd style && npm install && npm run build"
+  publish = "style/.next"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
