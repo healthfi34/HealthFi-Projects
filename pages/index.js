@@ -1,12 +1,23 @@
 import Head from 'next/head'
 import Header from '@components/Header'
 import Footer from '@components/Footer'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { createClient } from '@supabase/supabase-js'
+
+// Configuración de Supabase - USA TUS CREDENCIALES AQUÍ
+const supabaseUrl = 'https://jcmytlillgregzpaxlfb.supabase.co'
+const supabaseKey = 'sb_publishable__ylp7MwUh3RY8UU2ub8qBQ_TOtHeIq5'
+const supabase = createClient(supabaseUrl, supabaseKey)
 
 export default function Home() {
+  const [pacientes, setPacientes] = useState([])
   const [registros, setRegistros] = useState([])
   const [formData, setFormData] = useState({
-    paciente: '',
+    paciente_id: '',
+    nuevo_paciente: '',
+    edad: '',
+    sexo: '',
+    tipo_paciente: '',
     rmssd: '',
     fc: '',
     lf_hf: '',
@@ -14,10 +25,43 @@ export default function Home() {
     tipo_respiracion: ''
   })
 
-  // TUS FÓRMULAS TRADUCIDAS A JAVASCRIPT
-  const calcularZona = (rmssd, promedio, desviacion) => {
+  // Cargar pacientes desde Supabase
+  useEffect(() => {
+    cargarPacientes()
+    cargarRegistros()
+  }, [])
+
+  const cargarPacientes = async () => {
+    const { data, error } = await supabase
+      .from('pacientes')
+      .select('*')
+      .order('created_at', { ascending: false })
+    
+    if (!error) setPacientes(data || [])
+  }
+
+  const cargarRegistros = async () => {
+    const { data, error } = await supabase
+      .from('registros_vfc')
+      .select(`
+        *,
+        pacientes (nombre)
+      `)
+      .order('created_at', { ascending: false })
+      .limit(20)
+    
+    if (!error) setRegistros(data || [])
+  }
+
+  // TUS FÓRMULAS EXACTAS
+  const calcularZona = (rmssd, registrosPaciente) => {
     if (!rmssd) return ''
-    if (!promedio || promedio === "1ra medición") return "1ra medición"
+    if (registrosPaciente.length === 0) return "1ra medición"
+    
+    const valoresRmssd = registrosPaciente.map(r => parseFloat(r.rmssd))
+    const promedio = valoresRmssd.reduce((a, b) => a + b, 0) / valoresRmssd.length
+    const desviacion = Math.sqrt(valoresRmssd.map(x => Math.pow(x - promedio, 2)).reduce((a, b) => a + b) / valoresRmssd.length)
+    
     if (rmssd >= promedio) return "VERDE"
     if (rmssd >= promedio - desviacion) return "AMARILLA"
     return "ROJA"
@@ -62,35 +106,79 @@ export default function Home() {
     return "Priorice CALMA. Reduzca carga y estimulación."
   }
 
-  const handleSubmit = (e) => {
-    e.preventDefault()
-    
-    // Obtener registros del mismo paciente para cálculos
-    const registrosPaciente = registros.filter(r => r.paciente === formData.paciente)
-    const valoresRmssd = registrosPaciente.map(r => parseFloat(r.rmssd))
-    
-    // Cálculos como en Excel
-    const promedio = valoresRmssd.length >= 1 ? 
-      valoresRmssd.reduce((a, b) => a + b, 0) / valoresRmssd.length : "1ra medición"
-    
-    const desviacion = valoresRmssd.length >= 2 ? 
-      Math.sqrt(valoresRmssd.map(x => Math.pow(x - promedio, 2)).reduce((a, b) => a + b) / valoresRmssd.length) : "1ra medición"
+  const agregarPaciente = async () => {
+    if (!formData.nuevo_paciente) return
 
-    // Aplicar todas las fórmulas
+    const { data, error } = await supabase
+      .from('pacientes')
+      .insert([
+        {
+          nombre: formData.nuevo_paciente,
+          edad: formData.edad,
+          sexo: formData.sexo,
+          tipo_paciente: formData.tipo_paciente
+        }
+      ])
+      .select()
+
+    if (!error) {
+      await cargarPacientes()
+      setFormData({
+        ...formData,
+        nuevo_paciente: '',
+        edad: '',
+        sexo: '',
+        tipo_paciente: '',
+        paciente_id: data[0].id
+      })
+    }
+  }
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    if (!formData.paciente_id || !formData.rmssd) return
+
+    // Obtener registros del paciente para cálculos
+    const { data: registrosPaciente } = await supabase
+      .from('registros_vfc')
+      .select('*')
+      .eq('paciente_id', formData.paciente_id)
+
+    // Aplicar fórmulas
+    const rmssdNum = parseFloat(formData.rmssd)
+    const lfHfNum = parseFloat(formData.lf_hf)
+    
+    const zona = calcularZona(rmssdNum, registrosPaciente || [])
+    const actVagal = calcularActividadVagal(rmssdNum, lfHfNum)
+
     const nuevoRegistro = {
-      id: Date.now(),
-      fecha: new Date().toLocaleDateString(),
-      ...formData,
-      zona: calcularZona(parseFloat(formData.rmssd), promedio, desviacion),
-      recomendacion: calcularRecomendacion(calcularZona(parseFloat(formData.rmssd), promedio, desviacion)),
-      act_vagal: calcularActividadVagal(parseFloat(formData.rmssd), parseFloat(formData.lf_hf)),
-      tipo_respiracion: calcularTipoRespiracion(parseFloat(formData.lf_hf)),
-      patron_respiracion: calcularPatronRespiracion(calcularActividadVagal(parseFloat(formData.rmssd), parseFloat(formData.lf_hf))),
-      recomendacion_final: calcularRecomendacionFinal(calcularActividadVagal(parseFloat(formData.rmssd), parseFloat(formData.lf_hf)))
+      paciente_id: formData.paciente_id,
+      rmssd: rmssdNum,
+      fc: parseInt(formData.fc),
+      lf_hf: lfHfNum,
+      contexto: formData.contexto,
+      zona: zona,
+      recomendacion: calcularRecomendacion(zona),
+      act_vagal: actVagal,
+      tipo_respiracion: calcularTipoRespiracion(lfHfNum),
+      patron_respiracion: calcularPatronRespiracion(actVagal),
+      recomendacion_final: calcularRecomendacionFinal(actVagal)
     }
 
-    setRegistros([nuevoRegistro, ...registros])
-    setFormData({ paciente: '', rmssd: '', fc: '', lf_hf: '', contexto: '', tipo_respiracion: '' })
+    const { error } = await supabase
+      .from('registros_vfc')
+      .insert([nuevoRegistro])
+
+    if (!error) {
+      await cargarRegistros()
+      setFormData({
+        ...formData,
+        rmssd: '',
+        fc: '',
+        lf_hf: '',
+        contexto: ''
+      })
+    }
   }
 
   return (
@@ -110,14 +198,63 @@ export default function Home() {
           {/* FORMULARIO VFC - COLUMNAS 1-12 */}
           <div className="card">
             <h3>📊 Registro VFC</h3>
-            <form onSubmit={handleSubmit}>
+            
+            {/* SELECCIÓN DE PACIENTE */}
+            <div style={{marginBottom: '20px'}}>
+              <label>Paciente:</label>
+              <select 
+                value={formData.paciente_id}
+                onChange={(e) => setFormData({...formData, paciente_id: e.target.value})}
+                required
+              >
+                <option value="">Seleccionar Paciente</option>
+                {pacientes.map(paciente => (
+                  <option key={paciente.id} value={paciente.id}>
+                    {paciente.nombre} {paciente.edad && `(${paciente.edad}años)`}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* FORMULARIO NUEVO PACIENTE */}
+            <div style={{border: '1px solid #ccc', padding: '10px', marginBottom: '20px'}}>
+              <h4>➕ Nuevo Paciente</h4>
               <input 
                 type="text" 
-                placeholder="Nombre del Paciente" 
-                value={formData.paciente}
-                onChange={(e) => setFormData({...formData, paciente: e.target.value})}
-                required
+                placeholder="Nombre completo" 
+                value={formData.nuevo_paciente}
+                onChange={(e) => setFormData({...formData, nuevo_paciente: e.target.value})}
               />
+              <input 
+                type="number" 
+                placeholder="Edad" 
+                value={formData.edad}
+                onChange={(e) => setFormData({...formData, edad: e.target.value})}
+              />
+              <select 
+                value={formData.sexo}
+                onChange={(e) => setFormData({...formData, sexo: e.target.value})}
+              >
+                <option value="">Sexo</option>
+                <option value="M">Masculino</option>
+                <option value="F">Femenino</option>
+              </select>
+              <select 
+                value={formData.tipo_paciente}
+                onChange={(e) => setFormData({...formData, tipo_paciente: e.target.value})}
+              >
+                <option value="">Tipo de Paciente</option>
+                <option value="deportista_amateur">Deportista Amateur</option>
+                <option value="alto_rendimiento">Alto Rendimiento</option>
+                <option value="lesion_ortopedica">Lesión Ortopédica</option>
+              </select>
+              <button type="button" onClick={agregarPaciente}>
+                Agregar Paciente
+              </button>
+            </div>
+
+            {/* FORMULARIO VFC */}
+            <form onSubmit={handleSubmit}>
               <input 
                 type="number" 
                 placeholder="RMSSD" 
@@ -152,19 +289,22 @@ export default function Home() {
                 <option value="C">C - Cautela (sueño pobre, estrés moderado)</option>
                 <option value="D">D - Alerta (sueño muy pobre, estrés alto)</option>
               </select>
-              <button type="submit">Guardar Registro</button>
+              <button type="submit" disabled={!formData.paciente_id}>
+                Guardar Registro VFC
+              </button>
             </form>
           </div>
 
           {/* HISTORIAL VFC - COLUMNAS 13-24 */}
           <div className="card">
             <h3>📈 Historial VFC (Últimas 20)</h3>
-            {registros.slice(0, 20).map(registro => (
+            {registros.map(registro => (
               <div key={registro.id} className="registro-item">
-                <p><strong>{registro.paciente}</strong> - {registro.fecha}</p>
-                <p>RMSSD: {registro.rmssd} | Zona: <span className={`zona-${registro.zona?.toLowerCase()}`}>{registro.zona}</span></p>
+                <p><strong>{registro.pacientes?.nombre}</strong> - {new Date(registro.created_at).toLocaleDateString()}</p>
+                <p>RMSSD: {registro.rmssd} | Zona: <span className={`zona-${registro.zona?.toLowerCase()?.replace(' ', '-')}`}>{registro.zona}</span></p>
                 <p>Recomendación: {registro.recomendacion}</p>
                 <p>Patrón: {registro.patron_respiracion} | Tipo: {registro.tipo_respiracion}</p>
+                <p><em>{registro.recomendacion_final}</em></p>
               </div>
             ))}
           </div>
