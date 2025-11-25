@@ -1,6 +1,6 @@
 [build]
-  command = "cd style && npm install && npm run build"
-  publish = "style/.next"
+  command = "npm install && npm run build"
+  publish = ".next"
 
 [[redirects]]
   from = "/*"
